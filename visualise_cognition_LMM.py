@@ -95,14 +95,14 @@ DOMAIN_COLORS = {
 }
 
 WAVE_COLORS = {
-    "ses-00A": "#deebf7",
-    "ses-01A": "#c6dbef",
-    "ses-02A": "#9ecae1",
-    "ses-03A": "#6baed6",
-    "ses-04A": "#4292c6",
-    "ses-05A": "#2171b5",
-    "ses-06A": "#08519c",
-    "ses-07A": "#08306b",
+    "ses-00A": "#d0e8f8",
+    "ses-01A": "#a8d1f0",
+    "ses-02A": "#74b3e6",
+    "ses-03A": "#4a96d9",
+    "ses-04A": "#2878c9",
+    "ses-05A": "#1259a8",
+    "ses-06A": "#0c3f7a",
+    "ses-07A": "#071f3a",
 }
 WAVE_LABELS = {
     "ses-00A": "Baseline (~9 y)",
@@ -213,7 +213,17 @@ def compute_baseline_slope(data, col):
     model_data = data.dropna(subset=[col, "age", "participant_id"]).copy()
     if model_data.empty:
         return pd.DataFrame(columns=["participant_id", "baseline", "slope", "n_waves"])
-        
+
+    # Require ≥3 waves per participant for stable random slope estimation.
+    # Participants with 1–2 waves are excluded from Figure 2 (not Figure 1).
+    counts = model_data.groupby("participant_id").size()
+    eligible = counts[counts >= 3].index
+    model_data = model_data[model_data["participant_id"].isin(eligible)]
+
+    if model_data["participant_id"].nunique() < 10:
+        print(f"    -> Skipping {col}: fewer than 10 participants with ≥3 waves.")
+        return pd.DataFrame(columns=["participant_id", "baseline", "slope", "n_waves"])
+
     counts = model_data.groupby("participant_id").size()
     n_subj = model_data["participant_id"].nunique()
 
