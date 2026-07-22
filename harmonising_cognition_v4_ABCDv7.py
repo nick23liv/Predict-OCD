@@ -319,6 +319,12 @@ print("Processing Domain 5: Attention …")
 att = lmt[["participant_id", "session_id",
             "nc_y_lmt__crct_acc"]].copy()
 att = att.rename(columns={"nc_y_lmt__crct_acc": "Attention_raw_notz"})
+# A small number of rows have values >1 (coded as percentage rather than proportion).
+# These are data quality errors — set them to NaN so they are excluded from z-scoring.
+n_bad = (att["Attention_raw_notz"] > 1).sum()
+if n_bad > 0:
+    print(f"  Attention: excluding {n_bad} rows with nc_y_lmt__crct_acc > 1 (percentage coding error)")
+    att.loc[att["Attention_raw_notz"] > 1, "Attention_raw_notz"] = np.nan
 att = att.merge(site_df, on=["participant_id", "session_id"], how="left")
 
 att["Attention_z_withinsite"]       = zscore_within_groups(
