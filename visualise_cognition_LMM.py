@@ -95,14 +95,14 @@ DOMAIN_COLORS = {
 }
 
 WAVE_COLORS = {
-    "ses-00A": "#d0e8f8",
-    "ses-01A": "#a8d1f0",
-    "ses-02A": "#74b3e6",
-    "ses-03A": "#4a96d9",
-    "ses-04A": "#2878c9",
-    "ses-05A": "#1259a8",
-    "ses-06A": "#0c3f7a",
-    "ses-07A": "#071f3a",
+    "ses-00A": "#bde0f5",   # light powder blue
+    "ses-01A": "#7fc4e8",   # sky blue
+    "ses-02A": "#3da8d8",   # medium blue
+    "ses-03A": "#1788be",   # azure
+    "ses-04A": "#0d65a0",   # cobalt
+    "ses-05A": "#094d80",   # dark blue
+    "ses-06A": "#05365c",   # very dark blue
+    "ses-07A": "#021d35",   # near-black navy
 }
 WAVE_LABELS = {
     "ses-00A": "Baseline (~9 y)",
@@ -306,7 +306,7 @@ for ax_idx, (domain_key, domain) in enumerate(DOMAINS.items()):
         if len(pdata) >= 2:
             ax.plot(
                 pdata["age"], pdata[col],
-                color="#aaaaaa", alpha=0.12, linewidth=0.7, zorder=1,
+                color="#cccccc", alpha=0.05, linewidth=0.5, zorder=1,
             )
 
     # Draw wave scatters
@@ -315,7 +315,7 @@ for ax_idx, (domain_key, domain) in enumerate(DOMAINS.items()):
         if not wdata.empty:
             ax.scatter(
                 wdata["age"], wdata[col],
-                color=WAVE_COLORS[wave], s=5, alpha=0.5,
+                color=WAVE_COLORS[wave], s=8, alpha=0.65,
                 linewidths=0, zorder=2,
             )
 
@@ -344,7 +344,7 @@ for ax_idx, (domain_key, domain) in enumerate(DOMAINS.items()):
 
         ax.plot(x_range_raw, y_pred, color=color, linewidth=2.5, zorder=4,
                 label=f"LMM Fixed Trend (Δ={fixed_slope:+.2f}/yr)")
-        ax.fill_between(x_range_raw, y_lo, y_hi, alpha=0.20, color=color, zorder=3)
+        ax.fill_between(x_range_raw, y_lo, y_hi, alpha=0.25, color="#e0e0e0", zorder=3)
         
     except Exception as e:
         # Emergency fallback to pooled OLS visually if mathematical calculation breaks
@@ -352,7 +352,7 @@ for ax_idx, (domain_key, domain) in enumerate(DOMAINS.items()):
         if fit:
             x_range, y_pred, y_lo, y_hi, r, p, slope = fit
             ax.plot(x_range, y_pred, color=color, linewidth=2.5, zorder=4, label=f"OLS: slope={slope:.2f}")
-            ax.fill_between(x_range, y_lo, y_hi, alpha=0.20, color=color, zorder=3)
+            ax.fill_between(x_range, y_lo, y_hi, alpha=0.25, color="#e0e0e0", zorder=3)
 
     n_obs  = plot_df[col].notna().sum()
     n_subj = plot_df["participant_id"].nunique()
@@ -378,7 +378,7 @@ legend_ax.axis("off")
 handles = [
     mlines.Line2D([], [], color="#aaaaaa", linewidth=1.5, alpha=0.6,
                   label="Individual trajectory"),
-    mpatches.Patch(color="grey", alpha=0.3, label="Population 95 % CI"),
+    mpatches.Patch(color="#e0e0e0", alpha=0.8, label="Population 95 % CI"),
 ]
 for wave in ["ses-00A", "ses-01A", "ses-02A", "ses-03A", "ses-04A", "ses-05A", "ses-06A", "ses-07A"]:
     handles.append(
