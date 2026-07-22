@@ -220,8 +220,8 @@ def compute_baseline_slope(data, col):
     eligible = counts[counts >= 3].index
     model_data = model_data[model_data["participant_id"].isin(eligible)]
 
-    if model_data["participant_id"].nunique() < 10:
-        print(f"    -> Skipping {col}: fewer than 10 participants with ≥3 waves.")
+    if model_data["participant_id"].nunique() < 1000:
+        print(f"    -> Skipping {col}: fewer than 1000 participants with ≥3 waves.")
         return pd.DataFrame(columns=["participant_id", "baseline", "slope", "n_waves"])
 
     counts = model_data.groupby("participant_id").size()
