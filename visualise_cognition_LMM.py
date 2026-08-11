@@ -9,12 +9,12 @@ Produces two figures exploring longitudinal raw cognitive trajectories:
     – Points coloured by wave so the cross-sectional age shift is visible
       alongside the within-person trajectory.
 
-  Figure 2 (baseline_vs_slope.png)
-    – Scatter: each participant's baseline (ses-00A) score vs their
-      individual rate of change (LMM slope, points/year).
-    – Pearson r + p-value annotated.
-    – Helps judge whether baseline alone predicts trajectory or whether
-      longitudinal slope adds independent predictive power for ML.
+  Figure 2 (same_vs_individual_slopes.png)
+    – Model comparison: does everyone change at the same rate (Model A),
+      or do participants differ in their rate of change (Model B)?
+    – Three columns per domain: Model A trajectories (parallel), Model B
+      trajectories (fanning), and a statistics box (ΔBIC, LRT, R², SD).
+    – ΔBIC > 50 = very strong evidence for individual rates of change.
 
 Usage
 -----
@@ -39,8 +39,10 @@ import argparse
 import os
 import warnings
 
+import matplotlib
+matplotlib.use("Agg")  # headless-safe (HPC / no display)
 import matplotlib.pyplot as plt
-import matplotlib.lines as mlines  # <-- Typo fixed here
+import matplotlib.lines as mlines
 import matplotlib.patches as mpatches
 import numpy as np
 import pandas as pd
@@ -202,77 +204,6 @@ def ols_with_ci(x, y, n_points=200, ci=0.95):
     return x_range, y_pred, y_pred - t_crit * se_fit, y_pred + t_crit * se_fit, r, p, slope
 
 
-# ── Helper: per-participant baseline + slope using LMM ──────────────────────────
-def compute_baseline_slope(data, col):
-    """
-    Returns a DataFrame with one row per participant using a Linear Mixed-Effects Model (LMM):
-      baseline  – model-estimated score at baseline age (fixed + random intercept)
-      slope     – model-estimated rate of change (fixed + random slope)
-      n_waves   – number of non-null timepoints used
-    """
-    model_data = data.dropna(subset=[col, "age", "participant_id"]).copy()
-    if model_data.empty:
-        return pd.DataFrame(columns=["participant_id", "baseline", "slope", "n_waves"])
-
-    # Require ≥3 waves per participant for stable random slope estimation.
-    # Participants with 1–2 waves are excluded from Figure 2 (not Figure 1).
-    counts = model_data.groupby("participant_id").size()
-    eligible = counts[counts >= 3].index
-    model_data = model_data[model_data["participant_id"].isin(eligible)]
-
-    if model_data["participant_id"].nunique() < 1000:
-        print(f"    -> Skipping {col}: fewer than 1000 participants with ≥3 waves.")
-        return pd.DataFrame(columns=["participant_id", "baseline", "slope", "n_waves"])
-
-    counts = model_data.groupby("participant_id").size()
-    n_subj = model_data["participant_id"].nunique()
-
-    # Center age around baseline wave mean so that the Intercept represents baseline performance (~9yo)
-    baseline_ages = model_data.loc[model_data["session_id"] == "ses-00A", "age"]
-    baseline_mean_age = baseline_ages.mean() if not baseline_ages.empty else model_data["age"].min()
-    model_data["age_centered"] = model_data["age"] - baseline_mean_age
-
-    print(f"    -> Running LMM for {col} ({n_subj} subjects, {len(model_data)} rows)...", flush=True)
-
-    try:
-        model = smf.mixedlm(f"{col} ~ age_centered", model_data, groups="participant_id", re_formula="~age_centered")
-        result = model.fit(maxiter=50, method="lbfgs")
-
-        fixed_intercept = result.params["Intercept"]
-        fixed_slope = result.params["age_centered"]
-        re_effects = result.random_effects
-
-        records = [
-            {
-                "participant_id": pid,
-                "baseline": fixed_intercept + re_effects[pid]["participant_id"] if pid in re_effects else np.nan,
-                "slope": fixed_slope + re_effects[pid]["age_centered"] if pid in re_effects else np.nan,
-                "n_waves": counts[pid],
-            }
-            for pid in counts.index
-        ]
-            
-    except Exception as e:
-        print(f"  [Warning] LMM fit failed for {col} ({e}). Falling back to OLS loop.", flush=True)
-        records = []
-        for pid, grp in model_data.groupby("participant_id"):
-            grp = grp.sort_values("age")
-            baseline = grp.loc[grp["session_id"] == "ses-00A", col]
-            baseline = baseline.iloc[0] if len(baseline) else np.nan
-            slope = np.nan
-            if len(grp) >= 2:
-                res = stats.linregress(grp["age"].values, grp[col].values)
-                slope = res.slope
-            records.append({
-                "participant_id": pid,
-                "baseline": baseline,
-                "slope": slope,
-                "n_waves": len(grp),
-            })
-
-    return pd.DataFrame(records)
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # FIGURE 1 – Individual trajectories
 # ══════════════════════════════════════════════════════════════════════════════
@@ -398,130 +329,179 @@ print(f"  Saved → {out1}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# FIGURE 2 – Baseline score vs individual rate of change
+# FIGURE 2 – Do participants differ in their RATE of change, or only in where
+#            they start?   Trajectories + model comparison, in one figure.
 # ══════════════════════════════════════════════════════════════════════════════
-print("\nBuilding Figure 2: Baseline vs slope …")
+#
+# Two models are fitted per domain on the long-format data (one row per visit):
+#
+#   Model A : score ~ time + (1    | participant)
+#             everyone changes at the SAME rate; participants differ only in
+#             where they start  →  every trajectory has the same gradient, so
+#             the lines are PARALLEL.
+#   Model B : score ~ time + (time | participant)
+#             participants also differ in their own rate of change  →  the
+#             lines FAN OUT and cross.
+#
+# Statistics comparing the two models:
+#   ΔBIC    difference in BIC (>10 strong, >50 very strong evidence for B)
+#   LRT     likelihood ratio test, boundary-corrected (50:50 mix of χ²(1),
+#           χ²(2), since testing a variance against zero sits on the edge of
+#           the parameter space)
+#   R²      share of the variance in the REAL observed scores each model
+#           reproduces, pooled over all visits
+#
+# Models are compared by ML (not REML) because they differ in random-effects
+# structure. Time is centred on each participant's own first visit.
+# Minimum 1000 participants with ≥2 waves required — domains below this
+# threshold are skipped with a console note.
+print("\nBuilding Figure 2: same rate for everyone, or individual rates? …")
 
-fig2, axes2 = plt.subplots(2, 3, figsize=(18, 10))
-fig2.suptitle(
-    "Baseline Cognitive Score vs Individual Rate of Change\n"
-    "Each dot = one participant. Slope = LMM random slope (score units / year) "
-    "from their personal trajectory model.\n"
-    "If r ≈ 0: baseline and slope carry independent information → slope adds ML value.",
-    fontsize=11, y=1.02,
-)
-axes2_flat = axes2.flatten()
-axes2_flat[5].set_visible(False)
+N_LINES = 150
+_rs = np.random.default_rng(1)
+# IQ has too few repeated measures in ABCD to fit meaningful random slopes.
+SLOPE_DOMAINS = [d for d in DOMAINS if d != "IQ"]
 
-r_summary = {}
+fits2 = {}
+for dom in SLOPE_DOMAINS:
+    col = DOMAINS[dom]["col"]
+    domain_filter = DOMAINS[dom].get("filter")
 
-for ax_idx, (domain_key, domain) in enumerate(DOMAINS.items()):
-    ax    = axes2_flat[ax_idx]
-    col   = domain["col"]
-    color = DOMAIN_COLORS[domain_key]
+    d = df.copy()
+    if domain_filter:
+        fcol, fval = domain_filter
+        d = d[d[fcol] == fval]
 
-    data = df.copy()
-    if domain["filter"]:
-        fcol, fval = domain["filter"]
-        data = data[data[fcol] == fval]
+    d = d.dropna(subset=[col, "age"]).copy()
+    cnt = d.groupby("participant_id").size()
+    d = d[d["participant_id"].isin(cnt[cnt >= 2].index)]
 
-    bs_df = compute_baseline_slope(data, col)
-    bs_df = bs_df.dropna(subset=["baseline", "slope"])
-
-    if len(bs_df) < 5:
-        ax.text(0.5, 0.5, "Insufficient data", ha="center", va="center",
-                transform=ax.transAxes)
+    if d["participant_id"].nunique() < 1000:
+        print(f"    [skip] {dom}: fewer than 1000 participants with ≥2 waves.")
         continue
 
-    ax.scatter(
-        bs_df["baseline"], bs_df["slope"],
-        color=color, alpha=0.35, s=18, linewidths=0, zorder=2,
+    print(f"    -> {dom} …", flush=True)
+    d["t0"]   = d.groupby("participant_id")["age"].transform("min")
+    d["time"] = d["age"] - d["t0"]
+
+    mA = smf.mixedlm(f"{col} ~ time", d, groups="participant_id",
+                     re_formula="~1").fit(reml=False, maxiter=200, method="lbfgs")
+    mB = smf.mixedlm(f"{col} ~ time", d, groups="participant_id",
+                     re_formula="~time").fit(reml=False, maxiter=200, method="lbfgs")
+
+    lrt  = 2 * (mB.llf - mA.llf)
+    pval = 0.5 * stats.chi2.sf(lrt, 1) + 0.5 * stats.chi2.sf(lrt, 2)
+    n    = len(d)
+    dbic = (-2 * mA.llf + 4 * np.log(n)) - (-2 * mB.llf + 6 * np.log(n))
+
+    reA, reB = mA.random_effects, mB.random_effects
+    pA = np.array([mA.params["Intercept"] + reA[p].iloc[0] + mA.params["time"] * t
+                   for p, t in zip(d["participant_id"], d["time"])])
+    pB = np.array([mB.params["Intercept"] + reB[p].iloc[0]
+                   + (mB.params["time"] + reB[p].iloc[1]) * t
+                   for p, t in zip(d["participant_id"], d["time"])])
+    y   = d[col].values
+    sst = ((y - y.mean()) ** 2).sum()
+
+    fits2[dom] = {
+        "d": d, "mA": mA, "mB": mB, "lrt": lrt, "p": pval, "dbic": dbic,
+        "r2A": 1 - ((y - pA) ** 2).sum() / sst,
+        "r2B": 1 - ((y - pB) ** 2).sum() / sst,
+        "sd_slope": np.sqrt(max(mB.cov_re.iloc[1, 1], 0)),
+        "n_subj": d["participant_id"].nunique(),
+    }
+
+if not fits2:
+    print("  [skip] No domains had sufficient data for model comparison.")
+else:
+    doms2 = list(fits2.keys())
+    fig2, axes2 = plt.subplots(len(doms2), 3, figsize=(16.2, 4.7 * len(doms2)),
+                               squeeze=False,
+                               gridspec_kw={"width_ratios": [1, 1, 0.62]})
+    fig2.suptitle(
+        "Do participants differ in their RATE of change, or only in where they start?\n"
+        "Each line = one participant's model-implied trajectory, coloured by starting level",
+        fontsize=12, y=1.005,
     )
 
-    fit = ols_with_ci(bs_df["baseline"].values, bs_df["slope"].values)
-    if fit:
-        x_range, y_pred, y_lo, y_hi, r, p, _ = fit
-        ax.plot(x_range, y_pred, color=color, linewidth=2, zorder=3)
-        ax.fill_between(x_range, y_lo, y_hi, alpha=0.18, color=color, zorder=2)
-        r_summary[domain_key] = r
-    else:
-        r, p = stats.pearsonr(bs_df["baseline"], bs_df["slope"])
-        r_summary[domain_key] = r
+    for row, dom in enumerate(doms2):
+        f = fits2[dom]
+        d, mA, mB = f["d"], f["mA"], f["mB"]
+        pids = list(mB.random_effects.keys())
+        pick = _rs.choice(pids, size=min(N_LINES, len(pids)), replace=False)
+        tt   = np.linspace(0, d["time"].quantile(0.98), 50)
+        starts = np.array([mB.params["Intercept"] + mB.random_effects[p].iloc[0]
+                           for p in pick])
+        span = starts.max() - starts.min()
+        norm = (starts - starts.min()) / span if span > 0 else np.full_like(starts, 0.5)
+        cmap = plt.get_cmap("coolwarm")
 
-    ax.axhline(0, color="#999999", linewidth=0.8, linestyle="--", zorder=1)
+        for k, mdl in enumerate(["A", "B"]):
+            ax = axes2[row, k]
+            for p, nv in zip(pick, norm):
+                if mdl == "A":
+                    b0 = mA.params["Intercept"] + mA.random_effects[p].iloc[0]
+                    b1 = mA.params["time"]
+                else:
+                    b0 = mB.params["Intercept"] + mB.random_effects[p].iloc[0]
+                    b1 = mB.params["time"] + mB.random_effects[p].iloc[1]
+                ax.plot(tt, b0 + b1 * tt, color=cmap(nv), alpha=0.45, linewidth=0.9)
+            ax.plot(tt, mB.params["Intercept"] + mB.params["time"] * tt,
+                    color="#111111", linewidth=2.6, label="population average")
+            ax.set_xlabel("Years since that participant's first visit")
+            ax.set_ylabel(DOMAINS[dom]["ylabel"], fontsize=9)
+            ttl = ("Model A — ONE shared rate of change\n(lines parallel: nobody overtakes)"
+                   if mdl == "A" else
+                   "Model B — INDIVIDUAL rates of change\n(lines fan out and cross)")
+            ax.set_title(f"{dom}\n{ttl}", fontsize=10, fontweight="bold")
+            ax.legend(fontsize=7.5, frameon=False, loc="best")
+            ax.spines[["top", "right"]].set_visible(False)
 
-    p_label   = "p<0.001" if p < 0.001 else f"p={p:.3f}"
-    interp    = (
-        "Baseline ≈ independent of slope"    if abs(r) < 0.15 else
-        "Weak baseline–slope association"    if abs(r) < 0.30 else
-        "Moderate baseline–slope association" if abs(r) < 0.50 else
-        "Strong baseline–slope association"
-    )
-    ax.text(
-        0.04, 0.97,
-        f"r = {r:.2f}   {p_label}\nn = {len(bs_df)}\n{interp}",
-        transform=ax.transAxes, fontsize=8.5, va="top",
-        bbox=dict(boxstyle="round,pad=0.3", facecolor="white",
-                  edgecolor="#cccccc", alpha=0.85),
-    )
+        ylo = min(axes2[row, 0].get_ylim()[0], axes2[row, 1].get_ylim()[0])
+        yhi = max(axes2[row, 0].get_ylim()[1], axes2[row, 1].get_ylim()[1])
+        axes2[row, 0].set_ylim(ylo, yhi)
+        axes2[row, 1].set_ylim(ylo, yhi)
 
-    ax.set_xlabel(f"Model Baseline score (Centered intercept)\n{domain['ylabel']}", labelpad=4)
-    ax.set_ylabel("Individual LMM slope\n(score units / year)", labelpad=4)
-    ax.set_title(domain["title"], fontweight="bold", pad=8)
-
-ax_bar = axes2_flat[5]
-ax_bar.set_visible(True)
-if r_summary:
-    domain_labels = [d.replace("RespInhib", "Resp.\nInhib.")
-                       .replace("WorkingMem", "Working\nMem.")
-                     for d in r_summary.keys()]
-    r_vals  = list(r_summary.values())
-    colours = [DOMAIN_COLORS[d] for d in r_summary.keys()]
-    bars = ax_bar.bar(domain_labels, r_vals, color=colours, edgecolor="white",
-                      linewidth=0.8, zorder=2)
-    ax_bar.axhline(0, color="#555555", linewidth=0.8, zorder=1)
-    ax_bar.axhline( 0.3, color="#aaaaaa", linewidth=0.7, linestyle=":", zorder=1)
-    ax_bar.axhline(-0.3, color="#aaaaaa", linewidth=0.7, linestyle=":", zorder=1)
-    ax_bar.set_ylim(-1, 1)
-    ax_bar.set_ylabel("Pearson r (baseline vs slope)", labelpad=4)
-    ax_bar.set_title("Baseline–Slope Correlation\nSummary", fontweight="bold", pad=8)
-    ax_bar.spines["top"].set_visible(False)
-    ax_bar.spines["right"].set_visible(False)
-    ax_bar.text(
-        0.5, -0.18,
-        "Dotted lines: |r| = 0.3 threshold",
-        transform=ax_bar.transAxes, ha="center", fontsize=7.5, color="#777777",
-    )
-    for bar, r_val in zip(bars, r_vals):
-        ax_bar.text(
-            bar.get_x() + bar.get_width() / 2,
-            r_val + (0.03 if r_val >= 0 else -0.06),
-            f"{r_val:.2f}",
-            ha="center", va="bottom", fontsize=8, fontweight="bold",
+        verdict = ("MODEL B IS BETTER" if f["dbic"] > 50 else
+                   "Model B better"    if f["dbic"] > 10 else
+                   "little to choose between them")
+        ax_txt = axes2[row, 2]
+        ax_txt.axis("off")
+        ax_txt.text(
+            0.0, 0.5,
+            f"{verdict}\n"
+            f"ΔBIC = {f['dbic']:.0f}   (>10 strong, >50 very strong)\n"
+            f"LRT χ² = {f['lrt']:.0f},  p = {f['p']:.0e}\n"
+            f"variance of real scores explained:\n"
+            f"    {f['r2A']*100:.1f}%  →  {f['r2B']*100:.1f}%   "
+            f"(+{(f['r2B']-f['r2A'])*100:.1f} pts)\n"
+            f"SD of individual rates = {f['sd_slope']:.4f}/yr\n"
+            f"n = {f['n_subj']} participants",
+            transform=ax_txt.transAxes, fontsize=9.2, va="center", ha="left",
+            fontweight="normal", linespacing=1.55,
+            bbox=dict(boxstyle="round,pad=0.45", facecolor="white",
+                      edgecolor="#2ca02c" if f["dbic"] > 50 else "#cccccc",
+                      linewidth=1.8, alpha=0.93),
         )
 
-fig2.tight_layout()
-out2 = os.path.join(OUT_DIR, "baseline_vs_slope.png")
-fig2.savefig(out2, dpi=150, bbox_inches="tight")
-print(f"  Saved → {out2}")
+    fig2.tight_layout()
+    out2 = os.path.join(OUT_DIR, "same_vs_individual_slopes.png")
+    fig2.savefig(out2, dpi=150, bbox_inches="tight")
+    plt.close(fig2)
+    print(f"  Saved → {out2}")
 
-# ── Console summary ────────────────────────────────────────────────────────────
-print("\n" + "=" * 60)
-print("Baseline–slope Pearson r summary (LMM Extracted)")
-print("=" * 60)
-print(f"{'Domain':<22}  {'r':>6}  {'Interpretation'}")
-print("-" * 60)
-for domain_key, r in r_summary.items():
-    interp = (
-        "baseline & slope largely independent"  if abs(r) < 0.15 else
-        "weak association"                       if abs(r) < 0.30 else
-        "moderate association"                   if abs(r) < 0.50 else
-        "strong association"
-    )
-    print(f"  {domain_key:<20}  {r:>6.3f}  {interp}")
+    print("\n" + "=" * 74)
+    print("SAME RATE FOR EVERYONE (A)  vs  INDIVIDUAL RATES (B)")
+    print("=" * 74)
+    print(f"{'Domain':<13}{'subj':>6}{'dBIC':>8}{'LRT':>8}{'p':>10}"
+          f"{'R2 A':>8}{'R2 B':>8}{'gain':>8}")
+    print("-" * 74)
+    for dom in doms2:
+        f = fits2[dom]
+        print(f"{dom:<13}{f['n_subj']:>6}{f['dbic']:>8.0f}{f['lrt']:>8.0f}"
+              f"{f['p']:>10.0e}{f['r2A']:>8.3f}{f['r2B']:>8.3f}"
+              f"{(f['r2B']-f['r2A'])*100:>7.1f}pp")
+    print("\nΔBIC > 50 = very strong evidence that individual rates of change are real.")
+    print("=" * 74)
 
-print("\nML implication:")
-print("  |r| < ~0.30 → slope adds independent predictive power beyond baseline.")
-print("  |r| > ~0.50 → baseline likely captures most of the trajectory information.")
-print("=" * 60)
 print("\nDone.")
