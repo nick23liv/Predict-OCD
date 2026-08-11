@@ -257,7 +257,7 @@ for ax_idx, (domain_key, domain) in enumerate(DOMAINS.items()):
 
     try:
         model = smf.mixedlm(f"{col} ~ age_centered", plot_df, groups="participant_id", re_formula="~age_centered")
-        result = model.fit(maxiter=50, method="lbfgs")
+        result = model.fit(maxiter=300, method="powell")
 
         fixed_intercept = result.params["Intercept"]
         fixed_slope = result.params["age_centered"]
@@ -384,10 +384,14 @@ for dom in SLOPE_DOMAINS:
     d["t0"]   = d.groupby("participant_id")["age"].transform("min")
     d["time"] = d["age"] - d["t0"]
 
-    mA = smf.mixedlm(f"{col} ~ time", d, groups="participant_id",
-                     re_formula="~1").fit(reml=False, maxiter=200, method="lbfgs")
-    mB = smf.mixedlm(f"{col} ~ time", d, groups="participant_id",
-                     re_formula="~time").fit(reml=False, maxiter=200, method="lbfgs")
+    try:
+        mA = smf.mixedlm(f"{col} ~ time", d, groups="participant_id",
+                         re_formula="~1").fit(reml=False, maxiter=300, method="powell")
+        mB = smf.mixedlm(f"{col} ~ time", d, groups="participant_id",
+                         re_formula="~time").fit(reml=False, maxiter=300, method="powell")
+    except Exception as e:
+        print(f"    [skip] {dom}: model fit failed ({e}).")
+        continue
 
     lrt  = 2 * (mB.llf - mA.llf)
     pval = 0.5 * stats.chi2.sf(lrt, 1) + 0.5 * stats.chi2.sf(lrt, 2)
