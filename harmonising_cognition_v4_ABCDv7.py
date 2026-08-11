@@ -61,7 +61,7 @@ parser.add_argument(
 parser.add_argument(
     "--qc-dir",
     default=None,
-    help="Directory for QC figures. Default: a 'QC' subfolder inside --data-dir.",
+    help="Directory for QC figures. Default: a 'QC' subfolder next to --output.",
 )
 
 try:
@@ -512,7 +512,9 @@ for c in combined.columns:
 # without opening the CSV. Three figures are written to --qc-dir.
 # Skip with --skip-qc; redirect figures with --qc-dir.
 if not args.skip_qc:
-    QC_DIR = args.qc_dir if args.qc_dir else os.path.join(DATA_DIR, "QC")
+    # Default: a QC/ subfolder next to the output CSV (not inside --data-dir,
+    # which is read-only on the KCL CREATE TRE).
+    QC_DIR = args.qc_dir if args.qc_dir else os.path.join(os.path.dirname(os.path.abspath(OUT_FILE)), "QC")
     os.makedirs(QC_DIR, exist_ok=True)
 
     import matplotlib
