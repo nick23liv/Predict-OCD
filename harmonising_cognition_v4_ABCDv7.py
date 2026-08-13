@@ -159,7 +159,9 @@ DOMAIN_SPEC = {
     "RespInhib_computed": {
         "raw":       "RespInhib_computed_notz",
         "flipped":   False,
-        "plausible": (0, 150),
+        # ABCD v7 reports this on a 0-10 scale (confirmed against the real data),
+        # NOT the 0-150 uncorrected-standard-score scale used elsewhere in NIH Toolbox.
+        "plausible": (0, 10),
         "bounds":    None,
         "label":     "Response Inhibition (NIH Toolbox Flanker computed score)",
         "units":     "computed score",
@@ -179,7 +181,8 @@ DOMAIN_SPEC = {
     "CogFlex": {
         "raw":       "CogFlex_computed_notz",
         "flipped":   False,
-        "plausible": (0, 150),
+        # 0-10 scale in ABCD v7, same as the Flanker computed score (see above).
+        "plausible": (0, 10),
         "bounds":    None,
         "label":     "Cognitive Flexibility (DCCS computed score)",
         "units":     "computed score",
@@ -492,7 +495,13 @@ combined = combined[col_order]
 # (the replacement coerces every column to dtype=object, breaking numeric checks).
 qc_df = combined.copy()
 
-combined = combined.where(combined.notna(), other="n/a")
+# NOTE: do NOT do `combined.where(combined.notna(), other="n/a")` here. Putting a
+# string into the frame coerces every numeric column to object dtype, and to_csv
+# then formats those objects with str() rather than the full float repr -- which
+# silently drops precision in the written file. Measured on the real IMAGEN data,
+# one raw column went from 198 distinct values in memory to 151 in the CSV.
+# The na_rep="n/a" argument below already writes missing values as "n/a" while
+# leaving the columns as floats, so the conversion is redundant as well as harmful.
 
 
 # ── Save ───────────────────────────────────────────────────────────────────────
