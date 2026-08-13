@@ -255,35 +255,66 @@ for ax_idx, (domain_key, domain) in enumerate(DOMAINS.items()):
     baseline_mean_age = baseline_ages.mean() if not baseline_ages.empty else plot_df["age"].min()
     plot_df["age_centered"] = plot_df["age"] - baseline_mean_age
 
-    try:
-        model = smf.mixedlm(f"{col} ~ age_centered", plot_df, groups="participant_id", re_formula="~age_centered")
-        result = model.fit(maxiter=300, method="powell")
+    # A random-intercept + random-slope model is unidentifiable when almost every
+    # participant contributes a single observation (e.g. IQ, administered once).
+    # In that case the "trend" is a purely CROSS-SECTIONAL age gradient between
+    # different people, not within-person change — fit and label it as such
+    # rather than passing it off as a longitudinal LMM trend.
+    _n_subj_pre = plot_df["participant_id"].nunique()
+    _obs_per_subj = len(plot_df) / _n_subj_pre if _n_subj_pre else 0
+    is_cross_sectional = _obs_per_subj < 1.1
 
-        fixed_intercept = result.params["Intercept"]
-        fixed_slope = result.params["age_centered"]
-
-        x_range_raw = np.linspace(plot_df["age"].min(), plot_df["age"].max(), 200)
-        x_range_centered = x_range_raw - baseline_mean_age
-        y_pred = fixed_intercept + fixed_slope * x_range_centered
-
-        # Standard Error of fixed population line using the analytical covariance matrix parameters
-        X_mat = np.column_stack([np.ones_like(x_range_centered), x_range_centered])
-        cov_fe = result.cov_params().loc[['Intercept', 'age_centered'], ['Intercept', 'age_centered']].values
-        se_fit = np.sqrt(np.diag(np.dot(np.dot(X_mat, cov_fe), X_mat.T)))
-        y_lo = y_pred - 1.96 * se_fit
-        y_hi = y_pred + 1.96 * se_fit
-
-        ax.plot(x_range_raw, y_pred, color=color, linewidth=2.5, zorder=4,
-                label=f"LMM Fixed Trend (Δ={fixed_slope:+.2f}/yr)")
-        ax.fill_between(x_range_raw, y_lo, y_hi, alpha=0.25, color="#e0e0e0", zorder=3)
-        
-    except Exception as e:
-        # Emergency fallback to pooled OLS visually if mathematical calculation breaks
+    if is_cross_sectional:
         fit = ols_with_ci(plot_df["age"].values, plot_df[col].values)
         if fit:
             x_range, y_pred, y_lo, y_hi, r, p, slope = fit
-            ax.plot(x_range, y_pred, color=color, linewidth=2.5, zorder=4, label=f"OLS: slope={slope:.2f}")
+            ax.plot(x_range, y_pred, color=color, linewidth=2.5, zorder=4,
+                    linestyle="--",
+                    label=f"Cross-sectional trend (Δ={slope:+.2f}/yr)")
             ax.fill_between(x_range, y_lo, y_hi, alpha=0.25, color="#e0e0e0", zorder=3)
+        ax.text(
+            0.02, 0.06,
+            "⚠ Single timepoint per participant —\n"
+            "cross-sectional gradient, NOT within-person change",
+            transform=ax.transAxes, fontsize=7.5, va="bottom", color="#b35806",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="#fff4e6",
+                      edgecolor="#f0b27a", alpha=0.9),
+        )
+        result = None
+    else:
+        try:
+            model = smf.mixedlm(f"{col} ~ age_centered", plot_df,
+                                groups="participant_id", re_formula="~age_centered")
+            result = model.fit(maxiter=300, method="powell")
+
+            fixed_intercept = result.params["Intercept"]
+            fixed_slope = result.params["age_centered"]
+
+            x_range_raw = np.linspace(plot_df["age"].min(), plot_df["age"].max(), 200)
+            x_range_centered = x_range_raw - baseline_mean_age
+            y_pred = fixed_intercept + fixed_slope * x_range_centered
+
+            # SE of the fixed population line from the analytical covariance matrix
+            X_mat = np.column_stack([np.ones_like(x_range_centered), x_range_centered])
+            cov_fe = result.cov_params().loc[
+                ["Intercept", "age_centered"], ["Intercept", "age_centered"]].values
+            se_fit = np.sqrt(np.diag(np.dot(np.dot(X_mat, cov_fe), X_mat.T)))
+            y_lo = y_pred - 1.96 * se_fit
+            y_hi = y_pred + 1.96 * se_fit
+
+            ax.plot(x_range_raw, y_pred, color=color, linewidth=2.5, zorder=4,
+                    label=f"LMM Fixed Trend (Δ={fixed_slope:+.2f}/yr)")
+            ax.fill_between(x_range_raw, y_lo, y_hi, alpha=0.25, color="#e0e0e0", zorder=3)
+
+        except Exception as e:
+            # Fallback to pooled OLS if the mixed model fails to converge.
+            print(f"  [warn] LMM failed for {col} ({e}); falling back to OLS.", flush=True)
+            fit = ols_with_ci(plot_df["age"].values, plot_df[col].values)
+            if fit:
+                x_range, y_pred, y_lo, y_hi, r, p, slope = fit
+                ax.plot(x_range, y_pred, color=color, linewidth=2.5, zorder=4,
+                        linestyle=":", label=f"OLS fallback (Δ={slope:+.2f}/yr)")
+                ax.fill_between(x_range, y_lo, y_hi, alpha=0.25, color="#e0e0e0", zorder=3)
 
     n_obs  = plot_df[col].notna().sum()
     n_subj = plot_df["participant_id"].nunique()
@@ -450,7 +481,9 @@ else:
                     b0 = mB.params["Intercept"] + mB.random_effects[p].iloc[0]
                     b1 = mB.params["time"] + mB.random_effects[p].iloc[1]
                 ax.plot(tt, b0 + b1 * tt, color=cmap(nv), alpha=0.45, linewidth=0.9)
-            ax.plot(tt, mB.params["Intercept"] + mB.params["time"] * tt,
+            # Population average uses THIS panel's own model fixed effects.
+            m_pop = mA if mdl == "A" else mB
+            ax.plot(tt, m_pop.params["Intercept"] + m_pop.params["time"] * tt,
                     color="#111111", linewidth=2.6, label="population average")
             ax.set_xlabel("Years since that participant's first visit")
             ax.set_ylabel(DOMAINS[dom]["ylabel"], fontsize=9)
@@ -466,26 +499,49 @@ else:
         axes2[row, 0].set_ylim(ylo, yhi)
         axes2[row, 1].set_ylim(ylo, yhi)
 
-        verdict = ("MODEL B IS BETTER" if f["dbic"] > 50 else
-                   "Model B better"    if f["dbic"] > 10 else
-                   "little to choose between them")
+        # ΔBIC is signed: positive favours Model B (individual rates),
+        # NEGATIVE favours Model A (one shared rate). The ladder is symmetric
+        # so a strongly negative value is reported as evidence FOR Model A,
+        # not mislabelled as a tie.
+        _db = f["dbic"]
+        verdict = ("MODEL B IS BETTER"             if _db >  50 else
+                   "Model B better"                if _db >  10 else
+                   "little to choose between them" if _db > -10 else
+                   "Model A better"                if _db > -50 else
+                   "MODEL A IS BETTER")
+        # Green = strong evidence for individual rates; orange = strong evidence
+        # against them; grey = inconclusive.
+        _edge = ("#2ca02c" if _db > 50 else
+                 "#d95f02" if _db < -10 else
+                 "#cccccc")
         ax_txt = axes2[row, 2]
         ax_txt.axis("off")
+        # At large n the LRT can be significant while BIC still favours the
+        # simpler model — the effect is real but too small to justify the extra
+        # parameters. Flag that disagreement explicitly rather than leaving the
+        # reader to reconcile a significant p against a negative ΔBIC.
+        _note = ""
+        if _db < 0 and f["p"] < 0.05:
+            _note = ("\nNOTE: LRT significant but ΔBIC negative —\n"
+                     "effect is real but too small to be worth\n"
+                     "the extra parameters at this n.")
+
         ax_txt.text(
             0.0, 0.5,
             f"{verdict}\n"
-            f"ΔBIC = {f['dbic']:.0f}   (>10 strong, >50 very strong)\n"
+            f"ΔBIC = {_db:+.0f}   (positive favours B, negative favours A;\n"
+            f"          |ΔBIC|>10 strong, >50 very strong)\n"
             f"LRT χ² = {f['lrt']:.0f},  p = {f['p']:.0e}\n"
             f"variance of real scores explained:\n"
             f"    {f['r2A']*100:.1f}%  →  {f['r2B']*100:.1f}%   "
-            f"(+{(f['r2B']-f['r2A'])*100:.1f} pts)\n"
+            f"({(f['r2B']-f['r2A'])*100:+.1f} pts)\n"
             f"SD of individual rates = {f['sd_slope']:.4f}/yr\n"
-            f"n = {f['n_subj']} participants",
-            transform=ax_txt.transAxes, fontsize=9.2, va="center", ha="left",
-            fontweight="normal", linespacing=1.55,
+            f"n = {f['n_subj']} participants"
+            f"{_note}",
+            transform=ax_txt.transAxes, fontsize=8.8, va="center", ha="left",
+            fontweight="normal", linespacing=1.5,
             bbox=dict(boxstyle="round,pad=0.45", facecolor="white",
-                      edgecolor="#2ca02c" if f["dbic"] > 50 else "#cccccc",
-                      linewidth=1.8, alpha=0.93),
+                      edgecolor=_edge, linewidth=1.8, alpha=0.93),
         )
 
     fig2.tight_layout()
@@ -498,14 +554,23 @@ else:
     print("SAME RATE FOR EVERYONE (A)  vs  INDIVIDUAL RATES (B)")
     print("=" * 74)
     print(f"{'Domain':<13}{'subj':>6}{'dBIC':>8}{'LRT':>8}{'p':>10}"
-          f"{'R2 A':>8}{'R2 B':>8}{'gain':>8}")
+          f"{'R2 A':>8}{'R2 B':>8}{'gain':>8}   {'verdict'}")
     print("-" * 74)
     for dom in doms2:
         f = fits2[dom]
-        print(f"{dom:<13}{f['n_subj']:>6}{f['dbic']:>8.0f}{f['lrt']:>8.0f}"
+        _db = f["dbic"]
+        v = ("B (very strong)" if _db >  50 else
+             "B"               if _db >  10 else
+             "inconclusive"    if _db > -10 else
+             "A"               if _db > -50 else
+             "A (very strong)")
+        print(f"{dom:<13}{f['n_subj']:>6}{_db:>+8.0f}{f['lrt']:>8.0f}"
               f"{f['p']:>10.0e}{f['r2A']:>8.3f}{f['r2B']:>8.3f}"
-              f"{(f['r2B']-f['r2A'])*100:>7.1f}pp")
-    print("\nΔBIC > 50 = very strong evidence that individual rates of change are real.")
+              f"{(f['r2B']-f['r2A'])*100:>+7.1f}pp   {v}")
+    print("\nΔBIC is signed: POSITIVE favours Model B (individual rates of change),")
+    print("NEGATIVE favours Model A (one shared rate). |ΔBIC| > 50 = very strong.")
+    print("A significant LRT with a negative ΔBIC means the effect is real but too")
+    print("small to justify the extra parameters at this sample size.")
     print("=" * 74)
 
 print("\nDone.")
