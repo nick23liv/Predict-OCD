@@ -209,6 +209,17 @@ def ols_with_ci(x, y, n_points=200, ci=0.95):
 # ══════════════════════════════════════════════════════════════════════════════
 print("\nBuilding Figure 1: Individual trajectories …")
 
+# One shared x-range across all panels. Sizing each panel to its own data draws
+# every domain on a different age scale, which makes the wave clusters impossible
+# to compare between domains; a single axis lets them line up vertically so
+# differences in wave coverage read straight off the figure.
+# (Not sharex=True: that suppresses the tick labels on the upper row while
+# leaving its axis label in place.)
+_measure_cols = [d["col"] for d in DOMAINS.values() if d["col"] in df.columns]
+_ages = df.loc[df[_measure_cols].notna().any(axis=1), "age"].dropna()
+AGE_XLIM = (_ages.min() - 0.4, _ages.max() + 0.4)
+print(f"  shared age axis: {AGE_XLIM[0]:.1f} to {AGE_XLIM[1]:.1f} years")
+
 fig1, axes1 = plt.subplots(2, 3, figsize=(18, 10))
 fig1.suptitle(
     "Longitudinal Cognitive Trajectories (raw scores)\n"
@@ -321,7 +332,10 @@ for ax_idx, (domain_key, domain) in enumerate(DOMAINS.items()):
     ax.set_xlabel("Age (years)", labelpad=4)
     ax.set_ylabel(domain["ylabel"], labelpad=4)
     ax.set_title(domain["title"], fontweight="bold", pad=8)
-    ax.set_xlim(plot_df["age"].min() - 0.3, plot_df["age"].max() + 0.3)
+    # Shared across panels. The trend line above is still drawn only over each
+    # domain's own observed range, so nothing is extrapolated into ages where
+    # that domain was never collected.
+    ax.set_xlim(*AGE_XLIM)
     ax.text(
         0.02, 0.97,
         f"n={n_subj} participants\n{n_obs} observations",
@@ -415,6 +429,11 @@ for dom in SLOPE_DOMAINS:
     d["t0"]   = d.groupby("participant_id")["age"].transform("min")
     d["time"] = d["age"] - d["t0"]
 
+    # powell is used for every domain so the optimiser is uniform across the
+    # whole figure. It is derivative-free, so unlike lbfgs it never inverts the
+    # Hessian and cannot fail with LinAlgError: Singular matrix on a flat
+    # likelihood surface (which lbfgs did for RespInhib's Model B). Slower, but
+    # the runtime is acceptable and uniformity keeps the methods reporting simple.
     try:
         mA = smf.mixedlm(f"{col} ~ time", d, groups="participant_id",
                          re_formula="~1").fit(reml=False, maxiter=300, method="powell")
