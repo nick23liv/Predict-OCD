@@ -25,6 +25,11 @@
 #       are the direct measure of conflict resolution and are consistent with
 #       what the NIH Toolbox Flanker computed_score is built around;
 #       output column renamed RespInhib_acc_notz → RespInhib_incongr_acc_notz
+#   v4.1: added a 14-check QC report + 3 QC figures (--skip-qc / --qc-dir);
+#         IQ restricted to ses-00A (WISC-V is baseline-only; a few rows carried
+#         erroneous later session_ids and were contaminating the IQ z-scores);
+#         Attention rows with nc_y_lmt__crct_acc > 1 set to NaN (percentage
+#         coding error). Both exclusions print a count so they stay auditable.
 #
 # Output: harmonised_cognition_v4_ABCDv7.csv
 
@@ -265,6 +270,21 @@ iq = iq.rename(columns={
     "nc_y_wisc__raw_score":    "IQ_raw_notz",
     "nc_y_wisc__scaled_score": "IQ_scaled_notz",
 })
+# WISC-V Matrix Reasoning is administered at BASELINE ONLY in ABCD v7. A small
+# number of rows carry a later session_id; these are erroneous and are excluded
+# here rather than at the plotting stage, so they cannot contaminate the z-score
+# group means/SDs or leak into any downstream analysis that reads this CSV.
+# Values are set to NaN (not dropped) to keep the participant x session spine intact.
+IQ_VALID_WAVES = ["ses-00A"]
+_iq_bad_wave = (~iq["session_id"].isin(IQ_VALID_WAVES)) & (
+    iq["IQ_raw_notz"].notna() | iq["IQ_scaled_notz"].notna())
+if _iq_bad_wave.any():
+    _detail = iq.loc[_iq_bad_wave, "session_id"].value_counts().sort_index()
+    print(f"  IQ: excluding {int(_iq_bad_wave.sum())} row(s) outside "
+          f"{'/'.join(IQ_VALID_WAVES)} (erroneous late administrations) — "
+          + ", ".join(f"{w}: {n}" for w, n in _detail.items()))
+    iq.loc[_iq_bad_wave, ["IQ_raw_notz", "IQ_scaled_notz"]] = np.nan
+
 iq = iq.merge(site_df, on=["participant_id", "session_id"], how="left")
 
 iq["IQ_raw_z_withinsite"]    = zscore_within_groups(iq["IQ_raw_notz"],    [iq["site"]])
