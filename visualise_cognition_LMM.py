@@ -129,41 +129,59 @@ plt.rcParams.update({
 })
 
 # ── Domain configuration ───────────────────────────────────────────────────────
+# Panel headings are two lines: `name` (bold) then `source` ("task; variable").
+# `note` is small grey in-panel text, not part of the heading.
+# `waves` optionally restricts a domain to the sessions where it was actually
+# administered — see the IQ entry.
 DOMAINS = {
     "IQ": {
         "col":    "IQ_scaled_notz",
-        "title":  "IQ\n(WISC-V Scaled Score)",
+        "name":   "IQ",
+        "source": "WISC-V Matrix Reasoning; scaled score",
         "ylabel": "Scaled score",
         "note":   "M=10, SD=3 normative scale",
         "filter": None,
+        # WISC-V is a baseline-only measure in ABCD v7: 11,613 observations for
+        # 11,611 participants, i.e. a handful of stray rows carry a later
+        # session_id. Those are excluded here (with a console note listing
+        # exactly what was dropped, so the exclusion stays auditable).
+        "waves":  ["ses-00A"],
     },
     "RespInhib": {
         "col":    "RespInhib_computed_notz",
-        "title":  "Response Inhibition\n(NIH Toolbox Flanker)",
+        "name":   "Response Inhibition",
+        "source": "NIH Toolbox Flanker; computed score",
         "ylabel": "Computed score",
-        "note":   "NIH Toolbox only (nihtb_flanker)",
+        "note":   "NIH Toolbox rows only (task_type = nihtb_flanker)",
         "filter": ("task_type", "nihtb_flanker"),
+        "waves":  None,
     },
     "CogFlex": {
         "col":    "CogFlex_computed_notz",
-        "title":  "Cognitive Flexibility\n(NIH Toolbox DCCS)",
+        "name":   "Cognitive Flexibility",
+        "source": "NIH Toolbox DCCS; computed score",
         "ylabel": "Computed score",
         "note":   "",
         "filter": None,
+        "waves":  None,
     },
     "WorkingMem": {
         "col":    "WorkingMem_raw_notz",
-        "title":  "Working Memory\n(List Sorting Raw)",
+        "name":   "Working Memory",
+        "source": "NIH Toolbox List Sorting; raw score",
         "ylabel": "Raw score",
         "note":   "",
         "filter": None,
+        "waves":  None,
     },
     "Attention": {
         "col":    "Attention_raw_notz",
-        "title":  "Attention\n(Little Man Task Accuracy)",
+        "name":   "Attention",
+        "source": "Little Man Task; accuracy",
         "ylabel": "Proportion correct",
         "note":   "Range 0–1",
         "filter": None,
+        "waves":  None,
     },
 }
 
@@ -239,6 +257,18 @@ for ax_idx, (domain_key, domain) in enumerate(DOMAINS.items()):
     if domain["filter"]:
         fcol, fval = domain["filter"]
         data = data[data[fcol] == fval]
+
+    # Restrict to the sessions where this measure was actually administered,
+    # reporting exactly what is dropped so the exclusion can be checked against
+    # the source data rather than taken on trust.
+    if domain.get("waves"):
+        _excl = data[~data["session_id"].isin(domain["waves"]) & data[col].notna()]
+        if len(_excl):
+            _by_wave = _excl["session_id"].value_counts().sort_index()
+            _detail = ", ".join(f"{w}: {n}" for w, n in _by_wave.items())
+            print(f"  [{domain_key}] restricted to {'/'.join(domain['waves'])} — "
+                  f"excluded {len(_excl)} observation(s) at other waves ({_detail})")
+        data = data[data["session_id"].isin(domain["waves"])]
 
     plot_df = data[["participant_id", "session_id", "age", col]].dropna(subset=[col, "age"])
 
@@ -331,22 +361,23 @@ for ax_idx, (domain_key, domain) in enumerate(DOMAINS.items()):
     n_subj = plot_df["participant_id"].nunique()
     ax.set_xlabel("Age (years)", labelpad=4)
     ax.set_ylabel(domain["ylabel"], labelpad=4)
-    ax.set_title(domain["title"], fontweight="bold", pad=8)
+    # Heading: domain name (bold), with the task and variable on a lighter
+    # second line. `pad` reserves the room the second line sits in.
+    ax.set_title(domain["name"], fontweight="bold", fontsize=12, pad=20)
+    ax.text(0.5, 1.012, domain["source"], transform=ax.transAxes,
+            ha="center", va="bottom", fontsize=9, color="#444444")
     # Shared across panels. The trend line above is still drawn only over each
     # domain's own observed range, so nothing is extrapolated into ages where
     # that domain was never collected.
     ax.set_xlim(*AGE_XLIM)
+    _info = f"n={n_subj} participants\n{n_obs} observations"
+    if domain["note"]:
+        _info += f"\n{domain['note']}"
     ax.text(
-        0.02, 0.97,
-        f"n={n_subj} participants\n{n_obs} observations",
+        0.02, 0.97, _info,
         transform=ax.transAxes, fontsize=8, va="top", color="#555555",
     )
     ax.legend(loc="lower right", frameon=False, fontsize=8)
-    if domain["note"]:
-        ax.set_title(
-            f"{domain['title']}\n({domain['note']})",
-            fontweight="bold", pad=8, fontsize=10,
-        )
 
 legend_ax = axes1_flat[5]
 legend_ax.set_visible(True)
@@ -506,10 +537,9 @@ else:
                     color="#111111", linewidth=2.6, label="population average")
             ax.set_xlabel("Years since that participant's first visit")
             ax.set_ylabel(DOMAINS[dom]["ylabel"], fontsize=9)
-            ttl = ("Model A — ONE shared rate of change\n(lines parallel: nobody overtakes)"
-                   if mdl == "A" else
-                   "Model B — INDIVIDUAL rates of change\n(lines fan out and cross)")
-            ax.set_title(f"{dom}\n{ttl}", fontsize=10, fontweight="bold")
+            ttl = ("Model A — ONE shared rate of change" if mdl == "A"
+                   else "Model B — INDIVIDUAL rates of change")
+            ax.set_title(f"{DOMAINS[dom]['name']}\n{ttl}", fontsize=10, fontweight="bold")
             ax.legend(fontsize=7.5, frameon=False, loc="best")
             ax.spines[["top", "right"]].set_visible(False)
 
