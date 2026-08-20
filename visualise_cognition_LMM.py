@@ -435,6 +435,13 @@ print("\nBuilding Figure 2: same rate for everyone, or individual rates? …")
 
 N_LINES = 150
 _rs = np.random.default_rng(1)
+
+# A random-slope model needs 3+ observations per person to separate slope
+# variance from residual variance; with 2 they are confounded. Kept in step with
+# MIN_WAVES_FOR_SLOPES in visualise_cognition_IMAGEN.py.
+MIN_OBS_FOR_SLOPES     = 3
+MIN_SUBJECTS_FOR_SLOPES = 1000
+
 # IQ has too few repeated measures in ABCD to fit meaningful random slopes.
 SLOPE_DOMAINS = [d for d in DOMAINS if d != "IQ"]
 
@@ -448,12 +455,24 @@ for dom in SLOPE_DOMAINS:
         fcol, fval = domain_filter
         d = d[d[fcol] == fval]
 
+    # A random-slope model needs at least THREE observations per person. With
+    # two, the participant's two points define a line exactly, leaving no
+    # residual — so slope variance and residual variance are confounded and
+    # Model B "wins" by absorbing noise into the random slope. Cognitive
+    # Flexibility is administered at only two waves in ABCD v7 (exactly 2.00
+    # observations per eligible participant), and under the previous `>= 2`
+    # threshold it reported a spurious ΔBIC of +99 on a degenerate fit.
     d = d.dropna(subset=[col, "age"]).copy()
     cnt = d.groupby("participant_id").size()
-    d = d[d["participant_id"].isin(cnt[cnt >= 2].index)]
+    n_2wave = int((cnt >= 2).sum())
+    d = d[d["participant_id"].isin(cnt[cnt >= MIN_OBS_FOR_SLOPES].index)]
+    n_eligible = d["participant_id"].nunique()
 
-    if d["participant_id"].nunique() < 1000:
-        print(f"    [skip] {dom}: fewer than 1000 participants with ≥2 waves.")
+    if n_eligible < MIN_SUBJECTS_FOR_SLOPES:
+        print(f"    [skip] {dom}: {n_eligible} participants with "
+              f"≥{MIN_OBS_FOR_SLOPES} waves (need {MIN_SUBJECTS_FOR_SLOPES}); "
+              f"{n_2wave} have ≥2 — a random slope is not identifiable from "
+              f"two timepoints, so this domain cannot be assessed.")
         continue
 
     print(f"    -> {dom} …", flush=True)
@@ -473,6 +492,14 @@ for dom in SLOPE_DOMAINS:
     except Exception as e:
         print(f"    [skip] {dom}: model fit failed ({e}).")
         continue
+
+    # Powell with a maxiter cap can stop short of a true optimum, which would
+    # make the A-vs-B comparison meaningless. Say so rather than reporting a
+    # ΔBIC computed from a half-converged fit.
+    for _name, _m in (("A", mA), ("B", mB)):
+        if not getattr(_m, "converged", True):
+            print(f"    [WARN] {dom}: Model {_name} did NOT converge — "
+                  f"treat the comparison below as unreliable.")
 
     lrt  = 2 * (mB.llf - mA.llf)
     pval = 0.5 * stats.chi2.sf(lrt, 1) + 0.5 * stats.chi2.sf(lrt, 2)
@@ -558,11 +585,15 @@ else:
                    "little to choose between them" if _db > -10 else
                    "Model A better"                if _db > -50 else
                    "MODEL A IS BETTER")
-        # Green = strong evidence for individual rates; orange = strong evidence
-        # against them; grey = inconclusive.
-        _edge = ("#2ca02c" if _db > 50 else
-                 "#d95f02" if _db < -10 else
-                 "#cccccc")
+        # One colour per verdict, so the box never says "Model B better" while
+        # looking identical to an inconclusive one. Greens favour individual
+        # rates, oranges favour a single shared rate, grey is a genuine tie;
+        # the deeper shade is the >50 "very strong" tier in each direction.
+        _edge = ("#2ca02c" if _db >  50 else      # green        very strong, B
+                 "#7cb342" if _db >  10 else      # light green  strong, B
+                 "#cccccc" if _db > -10 else      # grey         inconclusive
+                 "#f0a860" if _db > -50 else      # light orange strong, A
+                 "#d95f02")                       # orange       very strong, A
         ax_txt = axes2[row, 2]
         ax_txt.axis("off")
         # At large n the LRT can be significant while BIC still favours the
