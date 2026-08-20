@@ -6,10 +6,13 @@
 #
 # Z-scoring variants produced per domain
 # ----------------------------------------
-#   _z_withinsite      : z-scored within each ABCD site
-#   _z_withinsitewave  : z-scored within each site × wave combination
-#   _z_withincohort    : z-scored across all sites (full cohort as one group)
-#   _z_withincohortwave: z-scored across all sites but separately within each wave
+#   _z_withincohort    : z-scored across the full cohort (all rows as one group)
+#   _z_withincohortwave: z-scored across the full cohort, separately within each wave
+#
+# NOTE (v5): ABCD is treated as a SINGLE cohort. The 21 ABCD sites are no longer
+# used, so there are no _z_withinsite / _z_withinsitewave columns and no `site`
+# column in the output. This matches the BHRC and IMAGEN schemas exactly, so the
+# three harmonised files can be concatenated without reconciling columns.
 #
 # Changelog
 # ---------
@@ -135,7 +138,7 @@ def _cohort_key(index):
 #   bounds     : (min, max) hard scale bounds for floor/ceiling check; None = continuous
 #   label/units: for plot axes
 #   age_expect : expected sign of r(raw, age) — +1 positive, -1 negative, 0 ≈ zero (normed)
-#   z_prefix   : prefix for z-score column names (e.g. "CogFlex" → CogFlex_z_withinsite)
+#   z_prefix   : prefix for z-score column names (e.g. "CogFlex" → CogFlex_z_withincohort)
 #
 # Note: Response Inhibition has two raw sub-columns (NIH Toolbox Flanker and Millisecond
 # Flanker) that are z-scored separately and then merged into combined RespInhib_z_* columns.
@@ -236,27 +239,23 @@ nihtb = pd.read_csv(FILES["nihtb"], sep="\t", na_values="n/a", low_memory=False)
 lmt   = pd.read_csv(FILES["lmt"],   sep="\t", na_values="n/a", low_memory=False)
 
 
-# ── Extract site (one row per participant × session) ───────────────────────────
-print("Extracting site information …")
-site_df = (
-    dyn[["participant_id", "session_id", "ab_g_dyn__design_site"]]
-    .dropna(subset=["ab_g_dyn__design_site"])
+# ── Build master spine ─────────────────────────────────────────────────────────
+# ABCD is treated as one cohort (v5): site is no longer extracted or z-scored on.
+# The design file is still used for the spine (so participants present in the
+# design but not in a given cognitive file keep a row) and for visit age in QC.
+print("Building master participant × session spine …")
+dyn_ids = (
+    dyn[["participant_id", "session_id"]]
     .drop_duplicates(subset=["participant_id", "session_id"], keep="first")
-    .rename(columns={"ab_g_dyn__design_site": "site"})
 )
 
-
-# ── Build master spine ─────────────────────────────────────────────────────────
-print("Building master participant × session spine …")
-all_ids = pd.concat([
+master = pd.concat([
     wisc [["participant_id", "session_id"]],
     flnkr[["participant_id", "session_id"]],
     nihtb[["participant_id", "session_id"]],
     lmt  [["participant_id", "session_id"]],
-    site_df[["participant_id", "session_id"]],
+    dyn_ids,
 ]).drop_duplicates()
-
-master = all_ids.merge(site_df, on=["participant_id", "session_id"], how="left")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -285,16 +284,6 @@ if _iq_bad_wave.any():
           + ", ".join(f"{w}: {n}" for w, n in _detail.items()))
     iq.loc[_iq_bad_wave, ["IQ_raw_notz", "IQ_scaled_notz"]] = np.nan
 
-iq = iq.merge(site_df, on=["participant_id", "session_id"], how="left")
-
-iq["IQ_raw_z_withinsite"]    = zscore_within_groups(iq["IQ_raw_notz"],    [iq["site"]])
-iq["IQ_scaled_z_withinsite"] = zscore_within_groups(iq["IQ_scaled_notz"], [iq["site"]])
-
-iq["IQ_raw_z_withinsitewave"]    = zscore_within_groups(
-    iq["IQ_raw_notz"],    [iq["site"], iq["session_id"]])
-iq["IQ_scaled_z_withinsitewave"] = zscore_within_groups(
-    iq["IQ_scaled_notz"], [iq["site"], iq["session_id"]])
-
 iq["IQ_raw_z_withincohort"]    = zscore_within_groups(
     iq["IQ_raw_notz"],    [_cohort_key(iq.index)])
 iq["IQ_scaled_z_withincohort"] = zscore_within_groups(
@@ -307,8 +296,6 @@ iq["IQ_scaled_z_withincohortwave"] = zscore_within_groups(
 
 iq_out = iq[["participant_id", "session_id",
              "IQ_raw_notz", "IQ_scaled_notz",
-             "IQ_raw_z_withinsite",       "IQ_scaled_z_withinsite",
-             "IQ_raw_z_withinsitewave",   "IQ_scaled_z_withinsitewave",
              "IQ_raw_z_withincohort",     "IQ_scaled_z_withincohort",
              "IQ_raw_z_withincohortwave", "IQ_scaled_z_withincohortwave"]]
 
@@ -341,7 +328,6 @@ ms_flnkr = ms_flnkr.rename(columns={
 # 2c. Merge and assign task_type
 # Rule: NIH Toolbox Flanker preferred; Millisecond used only when NIH unavailable.
 ri = nihtb_flnkr.merge(ms_flnkr, on=["participant_id", "session_id"], how="outer")
-ri = ri.merge(site_df,            on=["participant_id", "session_id"], how="left")
 
 ri["task_type"] = pd.NA
 ri.loc[ri["nihtb_computed_score"].notna(), "task_type"] = "nihtb_flanker"
@@ -365,19 +351,17 @@ ms_mask    = ri["task_type"] == "millisecond_flanker"
 # Z-scoring is computed separately within each task type before combining,
 # so the two tasks' different scales do not contaminate each other.
 
-for suffix, site_groups, ms_groups in [
-    ("_withinsite",       [ri["site"]],                   [ri["site"]]),
-    ("_withinsitewave",   [ri["site"], ri["session_id"]], [ri["site"], ri["session_id"]]),
-    ("_withincohort",     [_cohort_key(ri.index)],        [_cohort_key(ri.index)]),
-    ("_withincohortwave", [ri["session_id"]],             [ri["session_id"]]),
+for suffix, groups in [
+    ("_withincohort",     [_cohort_key(ri.index)]),
+    ("_withincohortwave", [ri["session_id"]]),
 ]:
     ri.loc[nihtb_mask, f"_nihtb_z{suffix}"] = zscore_within_groups(
         ri.loc[nihtb_mask, "nihtb_computed_score"],
-        [g.loc[nihtb_mask] for g in site_groups],
+        [g.loc[nihtb_mask] for g in groups],
     )
     ri.loc[ms_mask, f"_ms_z{suffix}"] = zscore_within_groups(
         ri.loc[ms_mask, "ms_incongr_acc"],
-        [g.loc[ms_mask] for g in ms_groups],
+        [g.loc[ms_mask] for g in groups],
     )
     col = f"RespInhib_z{suffix}"
     ri[col] = np.nan
@@ -386,7 +370,6 @@ for suffix, site_groups, ms_groups in [
 
 ri_out = ri[["participant_id", "session_id",
              "RespInhib_computed_notz", "RespInhib_incongr_acc_notz",
-             "RespInhib_z_withinsite",       "RespInhib_z_withinsitewave",
              "RespInhib_z_withincohort",     "RespInhib_z_withincohortwave",
              "task_type"]]
 
@@ -399,12 +382,7 @@ print("Processing Domain 3: Cognitive Flexibility …")
 cf = nihtb[["participant_id", "session_id",
              "nc_y_nihtb__crdst__computed_score"]].copy()
 cf = cf.rename(columns={"nc_y_nihtb__crdst__computed_score": "CogFlex_computed_notz"})
-cf = cf.merge(site_df, on=["participant_id", "session_id"], how="left")
 
-cf["CogFlex_z_withinsite"]       = zscore_within_groups(
-    cf["CogFlex_computed_notz"], [cf["site"]])
-cf["CogFlex_z_withinsitewave"]   = zscore_within_groups(
-    cf["CogFlex_computed_notz"], [cf["site"], cf["session_id"]])
 cf["CogFlex_z_withincohort"]     = zscore_within_groups(
     cf["CogFlex_computed_notz"], [_cohort_key(cf.index)])
 cf["CogFlex_z_withincohortwave"] = zscore_within_groups(
@@ -412,7 +390,6 @@ cf["CogFlex_z_withincohortwave"] = zscore_within_groups(
 
 cf_out = cf[["participant_id", "session_id",
              "CogFlex_computed_notz",
-             "CogFlex_z_withinsite",       "CogFlex_z_withinsitewave",
              "CogFlex_z_withincohort",     "CogFlex_z_withincohortwave"]]
 
 
@@ -424,12 +401,7 @@ print("Processing Domain 4: Working Memory …")
 wm = nihtb[["participant_id", "session_id",
              "nc_y_nihtb__lswmt__raw_score"]].copy()
 wm = wm.rename(columns={"nc_y_nihtb__lswmt__raw_score": "WorkingMem_raw_notz"})
-wm = wm.merge(site_df, on=["participant_id", "session_id"], how="left")
 
-wm["WorkingMem_z_withinsite"]       = zscore_within_groups(
-    wm["WorkingMem_raw_notz"], [wm["site"]])
-wm["WorkingMem_z_withinsitewave"]   = zscore_within_groups(
-    wm["WorkingMem_raw_notz"], [wm["site"], wm["session_id"]])
 wm["WorkingMem_z_withincohort"]     = zscore_within_groups(
     wm["WorkingMem_raw_notz"], [_cohort_key(wm.index)])
 wm["WorkingMem_z_withincohortwave"] = zscore_within_groups(
@@ -437,7 +409,6 @@ wm["WorkingMem_z_withincohortwave"] = zscore_within_groups(
 
 wm_out = wm[["participant_id", "session_id",
              "WorkingMem_raw_notz",
-             "WorkingMem_z_withinsite",       "WorkingMem_z_withinsitewave",
              "WorkingMem_z_withincohort",     "WorkingMem_z_withincohortwave"]]
 
 
@@ -455,12 +426,7 @@ n_bad = (att["Attention_raw_notz"] > 1).sum()
 if n_bad > 0:
     print(f"  Attention: excluding {n_bad} rows with nc_y_lmt__crct_acc > 1 (percentage coding error)")
     att.loc[att["Attention_raw_notz"] > 1, "Attention_raw_notz"] = np.nan
-att = att.merge(site_df, on=["participant_id", "session_id"], how="left")
 
-att["Attention_z_withinsite"]       = zscore_within_groups(
-    att["Attention_raw_notz"], [att["site"]])
-att["Attention_z_withinsitewave"]   = zscore_within_groups(
-    att["Attention_raw_notz"], [att["site"], att["session_id"]])
 att["Attention_z_withincohort"]     = zscore_within_groups(
     att["Attention_raw_notz"], [_cohort_key(att.index)])
 att["Attention_z_withincohortwave"] = zscore_within_groups(
@@ -468,7 +434,6 @@ att["Attention_z_withincohortwave"] = zscore_within_groups(
 
 att_out = att[["participant_id", "session_id",
                "Attention_raw_notz",
-               "Attention_z_withinsite",       "Attention_z_withinsitewave",
                "Attention_z_withincohort",     "Attention_z_withincohortwave"]]
 
 
@@ -484,29 +449,23 @@ for df in [iq_out, ri_out, cf_out, wm_out, att_out]:
 combined["task_type"] = combined["task_type"].fillna("n/a")
 
 col_order = [
-    "participant_id", "session_id", "site",
+    "participant_id", "session_id",
     # IQ
     "IQ_raw_notz", "IQ_scaled_notz",
-    "IQ_raw_z_withinsite",         "IQ_scaled_z_withinsite",
-    "IQ_raw_z_withinsitewave",     "IQ_scaled_z_withinsitewave",
     "IQ_raw_z_withincohort",       "IQ_scaled_z_withincohort",
     "IQ_raw_z_withincohortwave",   "IQ_scaled_z_withincohortwave",
     # Response Inhibition
     "RespInhib_computed_notz", "RespInhib_incongr_acc_notz",
-    "RespInhib_z_withinsite",       "RespInhib_z_withinsitewave",
     "RespInhib_z_withincohort",     "RespInhib_z_withincohortwave",
     "task_type",
     # Cognitive Flexibility
     "CogFlex_computed_notz",
-    "CogFlex_z_withinsite",         "CogFlex_z_withinsitewave",
     "CogFlex_z_withincohort",       "CogFlex_z_withincohortwave",
     # Working Memory
     "WorkingMem_raw_notz",
-    "WorkingMem_z_withinsite",      "WorkingMem_z_withinsitewave",
     "WorkingMem_z_withincohort",    "WorkingMem_z_withincohortwave",
     # Attention
     "Attention_raw_notz",
-    "Attention_z_withinsite",       "Attention_z_withinsitewave",
     "Attention_z_withincohort",     "Attention_z_withincohortwave",
 ]
 combined = combined[col_order]
@@ -564,13 +523,10 @@ if not args.skip_qc:
         return "FAIL"
 
     def _zcol(dom_key, suffix):
-        """Z-column name for a domain given a suffix like '_z_withinsite'."""
+        """Z-column name for a domain given a suffix like '_z_withincohort'."""
         return f"{DOMAIN_SPEC[dom_key]['z_prefix']}{suffix}"
 
-    ALL_Z_SUFFIXES = [
-        "_z_withinsite", "_z_withinsitewave",
-        "_z_withincohort", "_z_withincohortwave",
-    ]
+    ALL_Z_SUFFIXES = ["_z_withincohort", "_z_withincohortwave"]
 
     # Merge visit age from dyn for construct-validity and attrition checks.
     # dyn is already loaded above; reuse it here without an extra file read.
@@ -640,11 +596,7 @@ if not args.skip_qc:
 
     # ── QC 5: z-scores are correctly standardised ─────────────────────────────
     # _withincohort     → mean 0, SD 1 overall.
-    # _withinsite       → mean 0, SD 1 within each site.
     # _withincohortwave → mean 0, SD 1 within each wave.
-    # _withinsitewave   → mean 0, SD 1 within each site × wave cell.
-    # Only sites with unexpected mean/SD are printed for _withinsite to keep
-    # output manageable (21 ABCD sites × 7 domains would be very long).
     print("\n[5] Z-score standardisation (expect mean≈0, SD≈1 within the relevant group)")
     TOL_MEAN, TOL_SD = 0.01, 0.01
     for dom, spec in Z_SPEC.items():
@@ -653,25 +605,6 @@ if not args.skip_qc:
         if len(s) > 1:
             ok = abs(s.mean()) < TOL_MEAN and abs(s.std(ddof=1) - 1) < TOL_SD
             print(f"    {zc:<46} overall  mean={s.mean():+.4f} SD={s.std(ddof=1):.4f}  [{_status(ok)}]")
-
-    print("\n    per-site failures for _withinsite (passing sites omitted):")
-    any_site_fail = False
-    for dom, spec in Z_SPEC.items():
-        zc = _zcol(dom, "_z_withinsite")
-        for site, grp in qc_df.groupby("site"):
-            s = grp[zc].dropna()
-            if len(s) <= 1:
-                continue
-            sd = s.std(ddof=1)
-            ok = abs(s.mean()) < TOL_MEAN and abs(sd - 1) < TOL_SD
-            degenerate = sd == 0
-            tag = _status(ok, warn=degenerate) if not ok else None
-            if tag is not None:
-                print(f"      {zc:<44} site={str(site):<6} n={len(s):<6} "
-                      f"mean={s.mean():+.4f} SD={sd:.4f}  [{tag}]")
-                any_site_fail = True
-    if not any_site_fail:
-        print("      (all sites PASS)")
 
     print("\n    per-wave check for _withincohortwave:")
     for dom, spec in Z_SPEC.items():
@@ -712,19 +645,19 @@ if not args.skip_qc:
                   f"{direction})   [{_status(ok)}]")
 
     # ── QC 7: z-scoring group sizes ───────────────────────────────────────────
-    # Z-scores from very small groups are unstable. Flags site × wave cells with n < 30.
-    print("\n[7] Z-scoring group sizes (per site x wave; small n → unstable z)")
+    # Z-scores from very small groups are unstable. Flags waves with n < 30.
+    print("\n[7] Z-scoring group sizes (per wave; small n → unstable z)")
     MIN_N = 30
     flagged_any = False
     for dom, spec in DOMAIN_SPEC.items():
-        for (site, wave), grp in qc_df.groupby(["site", "session_id"]):
+        for wave, grp in qc_df.groupby("session_id"):
             n = grp[spec["raw"]].notna().sum()
             if 0 < n < MIN_N:
-                print(f"    {dom:<28} site={str(site):<6} {wave:<10} n={n:<6} "
+                print(f"    {dom:<28} {wave:<10} n={n:<6} "
                       f"[{_status(False, warn=True)}]")
                 flagged_any = True
     if not flagged_any:
-        print(f"    (all populated site x wave cells have n ≥ {MIN_N})")
+        print(f"    (all populated waves have n ≥ {MIN_N})")
 
     # ── QC 8: distribution shape ──────────────────────────────────────────────
     # Z-scoring standardises location/scale but does NOT normalise shape.
@@ -859,6 +792,91 @@ if not args.skip_qc:
               f"data at {last_w})")
     else:
         print("    (fewer than 2 waves with data -- attrition check not applicable)")
+
+    # ── QC 15: missing-value sentinels ────────────────────────────────────────
+    # Numeric missing codes that pandas reads as real values. A sentinel inside a
+    # variable's plausible range slips past check 3 entirely, so scan explicitly.
+    print("\n[15] Missing-value sentinels surviving in raw columns")
+    SENTINELS = [-1, -999, 777, 888, 999]
+    found_sentinel = False
+    for dom, spec in DOMAIN_SPEC.items():
+        s = qc_df[spec["raw"]].dropna()
+        if s.empty:
+            continue
+        hits = {v: int((s == v).sum()) for v in SENTINELS if (s == v).sum() > 0}
+        if hits:
+            detail = ", ".join(f"{v}: {n}" for v, n in hits.items())
+            print(f"    {dom:<28} {detail}   [{_status(False)}]")
+            found_sentinel = True
+    if not found_sentinel:
+        print(f"    (no values equal to {SENTINELS} in any raw column)")
+
+    # ── QC 16: single-wave domains ────────────────────────────────────────────
+    # If a domain has data at exactly one wave, z-scoring across the cohort and
+    # z-scoring within that wave operate on the same rows, so the two columns
+    # must be numerically identical. A mismatch means stray rows at other waves
+    # — exactly the bug that IQ had before the ses-00A restriction was added.
+    print("\n[16] Single-wave domains: _withincohort must equal _withincohortwave")
+    any_single = False
+    for dom, spec in Z_SPEC.items():
+        waves_with_data = qc_df.loc[qc_df[spec["raw"]].notna(), "session_id"].nunique()
+        if waves_with_data != 1:
+            continue
+        any_single = True
+        a = qc_df[_zcol(dom, "_z_withincohort")]
+        b = qc_df[_zcol(dom, "_z_withincohortwave")]
+        pair = pd.concat([a, b], axis=1).dropna()
+        ok = bool(np.allclose(pair.iloc[:, 0], pair.iloc[:, 1])) if len(pair) else True
+        print(f"    {dom:<28} single wave, n={len(pair):<6} identical={ok}   "
+              f"[{_status(ok)}]")
+    if not any_single:
+        print("    (no single-wave domains)")
+
+    # ── QC 17: age increases across waves within participant ──────────────────
+    # Catches wave/age mismatches and mislabelled sessions. A negative step means
+    # a participant's later-numbered wave was recorded at a younger age.
+    print("\n[17] Age increases across waves within participant")
+    _a = qc_df[["participant_id", "session_id", "age"]].dropna(subset=["age"]).copy()
+    _a["_ord"] = _a["session_id"].map({w: i for i, w in enumerate(ALL_WAVES)})
+    _a = _a.dropna(subset=["_ord"]).sort_values(["participant_id", "_ord"])
+    _step = _a.groupby("participant_id")["age"].diff()
+    _n_pairs = int(_step.notna().sum())
+    _n_bad = int((_step < 0).sum())
+    print(f"    {_n_bad}/{_n_pairs} adjacent-wave age steps are negative   "
+          f"[{_status(_n_bad == 0, warn=True)}]")
+    if _n_bad:
+        _worst = _a.loc[_step.idxmin(), ["participant_id", "session_id"]]
+        print(f"    largest decrease: {_step.min():+.2f} y at "
+              f"{_worst['participant_id']} / {_worst['session_id']}")
+
+    # ── QC 18: within-participant implausible change ──────────────────────────
+    # No other check looks at CHANGE. A jump of more than 4 SD between adjacent
+    # waves is far more likely a data error than genuine development, and it
+    # would badly distort any longitudinal slope model fitted downstream.
+    print("\n[18] Within-participant change between adjacent waves (> 4 SD = implausible)")
+    CHANGE_SD = 4.0
+    for dom, spec in DOMAIN_SPEC.items():
+        col = spec["raw"]
+        d = qc_df[["participant_id", "session_id", col]].dropna(subset=[col])
+        if d.empty:
+            continue
+        sd = d[col].std(ddof=1)
+        if not np.isfinite(sd) or sd == 0:
+            print(f"    {dom:<28} (zero/undefined SD -- not computable)")
+            continue
+        d = d.copy()
+        d["_ord"] = d["session_id"].map({w: i for i, w in enumerate(ALL_WAVES)})
+        d = d.dropna(subset=["_ord"]).sort_values(["participant_id", "_ord"])
+        step = d.groupby("participant_id")[col].diff()
+        n_pairs = int(step.notna().sum())
+        if n_pairs == 0:
+            print(f"    {dom:<28} (single wave -- no adjacent pairs)")
+            continue
+        n_ext = int((step.abs() > CHANGE_SD * sd).sum())
+        pct = n_ext / n_pairs * 100
+        print(f"    {dom:<28} {n_ext}/{n_pairs} changes exceed {CHANGE_SD:g} SD "
+              f"({pct:.2f}%)  max|Δ|={step.abs().max():.2f} ({step.abs().max()/sd:.1f} SD)   "
+              f"[{_status(n_ext == 0, warn=True)}]")
 
     # ── QC FIGURE 1: raw vs z-scored distributions ───────────────────────────
     print("\nBuilding QC figures …")
