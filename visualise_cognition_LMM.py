@@ -152,8 +152,11 @@ DOMAINS = {
         "name":   "Response Inhibition",
         "source": "NIH Toolbox Flanker; computed score",
         "ylabel": "Computed score",
-        "note":   "NIH Toolbox rows only (task_type = nihtb_flanker)",
-        "filter": ("task_type", "nihtb_flanker"),
+        "note":   "",
+        # v6: the Millisecond Flanker fallback was removed from the harmonisation
+        # script, so every RespInhib row is now the NIH Toolbox score and there is
+        # no task_type column left to filter on.
+        "filter": None,
         "waves":  None,
     },
     "CogFlex": {
