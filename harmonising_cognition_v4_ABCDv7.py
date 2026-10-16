@@ -33,6 +33,18 @@
 #         erroneous later session_ids and were contaminating the IQ z-scores);
 #         Attention rows with nc_y_lmt__crct_acc > 1 set to NaN (percentage
 #         coding error). Both exclusions print a count so they stay auditable.
+#   v5: site removed entirely — ABCD treated as one cohort; QC extended to 18 checks
+#   v6: MILLISECOND FLANKER REMOVED. Response Inhibition is now NIH Toolbox only,
+#       dropping RespInhib_incongr_acc_notz and task_type (22 -> 20 columns).
+#       Evidence: 0 observations at baseline, 85.8% of values at the accuracy
+#       ceiling, and only 10.9% of the domain. See the Domain 2 comment block.
+#       Also: floor/ceiling bounds set for IQ_raw (0,32), RespInhib (0,10) and
+#       CogFlex (0,10) — previously None, so the ceiling check was silently
+#       skipped for the three domains where ceiling is actually visible.
+#       Also: _withincohortwave blanked where a wave holds <10% of the domain's
+#       largest wave (ABCD: CogFlex ses-02A n=6 / ses-04A n=37, WorkingMem
+#       ses-02A n=15) — a z-score from such a group is noise with a valid-looking
+#       value.
 #
 # Output: harmonised_cognition_v4_ABCDv7.csv
 
@@ -83,7 +95,6 @@ DATA_DIR = args.data_dir
 FILES = {
     "dyn":   os.path.join(DATA_DIR, "ab_g_dyn.tsv"),
     "wisc":  os.path.join(DATA_DIR, "nc_y_wisc.tsv"),
-    "flnkr": os.path.join(DATA_DIR, "nc_y_flnkr.tsv"),
     "nihtb": os.path.join(DATA_DIR, "nc_y_nihtb.tsv"),
     "lmt":   os.path.join(DATA_DIR, "nc_y_lmt.tsv"),
 }
@@ -140,9 +151,6 @@ def _cohort_key(index):
 #   age_expect : expected sign of r(raw, age) — +1 positive, -1 negative, 0 ≈ zero (normed)
 #   z_prefix   : prefix for z-score column names (e.g. "CogFlex" → CogFlex_z_withincohort)
 #
-# Note: Response Inhibition has two raw sub-columns (NIH Toolbox Flanker and Millisecond
-# Flanker) that are z-scored separately and then merged into combined RespInhib_z_* columns.
-# Both sub-columns are listed here for raw checks; z-score checks use the shared z_prefix.
 DOMAIN_SPEC = {
     "IQ_scaled": {
         "raw":       "IQ_scaled_notz",
@@ -157,8 +165,10 @@ DOMAIN_SPEC = {
     "IQ_raw": {
         "raw":       "IQ_raw_notz",
         "flipped":   False,
-        "plausible": (0, 30),
-        "bounds":    None,
+        "plausible": (0, 32),
+        # WISC-V Matrix Reasoning has 32 items, so the raw score IS bounded.
+        # Previously None, which silently skipped the floor/ceiling check.
+        "bounds":    (0, 32),
         "label":     "IQ (WISC-V raw score)",
         "units":     "raw score",
         "age_expect": +1,
@@ -170,19 +180,11 @@ DOMAIN_SPEC = {
         # ABCD v7 reports this on a 0-10 scale (confirmed against the real data),
         # NOT the 0-150 uncorrected-standard-score scale used elsewhere in NIH Toolbox.
         "plausible": (0, 10),
-        "bounds":    None,
+        # The computed score saturates at 10 and participants do sit there, so this
+        # is a real ceiling. Previously None, which skipped the check entirely.
+        "bounds":    (0, 10),
         "label":     "Response Inhibition (NIH Toolbox Flanker computed score)",
         "units":     "computed score",
-        "age_expect": +1,
-        "z_prefix":  "RespInhib",
-    },
-    "RespInhib_incongr_acc": {
-        "raw":       "RespInhib_incongr_acc_notz",
-        "flipped":   False,
-        "plausible": (0, 1),
-        "bounds":    (0.0, 1.0),
-        "label":     "Response Inhibition (Millisecond Flanker incongruent accuracy)",
-        "units":     "proportion correct",
         "age_expect": +1,
         "z_prefix":  "RespInhib",
     },
@@ -191,7 +193,7 @@ DOMAIN_SPEC = {
         "flipped":   False,
         # 0-10 scale in ABCD v7, same as the Flanker computed score (see above).
         "plausible": (0, 10),
-        "bounds":    None,
+        "bounds":    (0, 10),   # real ceiling; previously None, check was skipped
         "label":     "Cognitive Flexibility (DCCS computed score)",
         "units":     "computed score",
         "age_expect": +1,
@@ -220,8 +222,6 @@ DOMAIN_SPEC = {
 }
 
 # Deduplicated view used for z-score checks (checks 4, 5, 6, 10, 12).
-# RespInhib_computed and RespInhib_incongr_acc share the same combined z columns,
-# so only RespInhib_computed appears here as the representative entry.
 _seen_z: set = set()
 Z_SPEC: dict = {}
 for _dom, _spec in DOMAIN_SPEC.items():
@@ -234,7 +234,6 @@ for _dom, _spec in DOMAIN_SPEC.items():
 print("Loading data files …")
 dyn   = pd.read_csv(FILES["dyn"],   sep="\t", na_values="n/a", low_memory=False)
 wisc  = pd.read_csv(FILES["wisc"],  sep="\t", na_values="n/a", low_memory=False)
-flnkr = pd.read_csv(FILES["flnkr"], sep="\t", na_values="n/a", low_memory=False)
 nihtb = pd.read_csv(FILES["nihtb"], sep="\t", na_values="n/a", low_memory=False)
 lmt   = pd.read_csv(FILES["lmt"],   sep="\t", na_values="n/a", low_memory=False)
 
@@ -251,7 +250,6 @@ dyn_ids = (
 
 master = pd.concat([
     wisc [["participant_id", "session_id"]],
-    flnkr[["participant_id", "session_id"]],
     nihtb[["participant_id", "session_id"]],
     lmt  [["participant_id", "session_id"]],
     dyn_ids,
@@ -305,73 +303,40 @@ iq_out = iq[["participant_id", "session_id",
 # ══════════════════════════════════════════════════════════════════════════════
 print("Processing Domain 2: Response Inhibition …")
 
-# 2a. NIH Toolbox Flanker
-# computed_score uses a two-stage algorithm:
+# NIH Toolbox Flanker only (v6). computed_score uses a two-stage algorithm:
 #   - incongruent accuracy ≤ 80%: score is accuracy-based
 #   - incongruent accuracy > 80%: score is RT-cost-based (congruent RT − incongruent RT)
 # Higher computed_score = better inhibitory control. No flip applied.
-nihtb_flnkr = nihtb[["participant_id", "session_id",
-                       "nc_y_nihtb__flnkr__computed_score"]].copy()
-nihtb_flnkr = nihtb_flnkr.rename(
-    columns={"nc_y_nihtb__flnkr__computed_score": "nihtb_computed_score"})
+#
+# MILLISECOND FLANKER REMOVED (v6)
+# --------------------------------
+# Earlier versions fell back to the Millisecond Flanker (nc_y_flnkr.tsv) where the
+# Toolbox score was missing, contributing a `RespInhib_incongr_acc_notz` column and
+# a `task_type` selector. It was dropped on the real-data evidence:
+#   - NOT COLLECTED AT BASELINE: 0 observations at ses-00A (2,193 / 1,892 / 305 at
+#     ses-02A / 04A / 06A), so it could never support a baseline feature and its
+#     coverage collapses by the final wave.
+#   - SEVERE CEILING: 85.8% of its incongruent-accuracy values sit at exactly 1.0.
+#     The task has few incongruent trials, so accuracy is both quantised and
+#     saturated — this is precisely the problem the Toolbox two-vector score exists
+#     to avoid, and using bare accuracy reintroduced it.
+#   - MINORITY BRANCH: 4,390 observations against 35,769 for the Toolbox score
+#     (10.9% of the domain).
+# Response Inhibition is therefore a single-task domain, measured identically at
+# every wave, which also removes the need for the `task_type` column.
+ri = nihtb[["participant_id", "session_id",
+            "nc_y_nihtb__flnkr__computed_score"]].copy()
+ri = ri.rename(
+    columns={"nc_y_nihtb__flnkr__computed_score": "RespInhib_computed_notz"})
 
-# 2b. Millisecond Flanker — incongruent accuracy only (v4)
-# Incongruent trials are the direct measure of conflict resolution.
-# This is consistent with what the NIH Toolbox Flanker computed_score is built around.
-# Overall accuracy (v3) was replaced because congruent trials do not test response inhibition.
-ms_flnkr = flnkr[["participant_id", "session_id",
-                    "nc_y_flnkr__incongr_acc"]].copy()
-ms_flnkr = ms_flnkr.rename(columns={
-    "nc_y_flnkr__incongr_acc": "ms_incongr_acc",
-})
-
-# 2c. Merge and assign task_type
-# Rule: NIH Toolbox Flanker preferred; Millisecond used only when NIH unavailable.
-ri = nihtb_flnkr.merge(ms_flnkr, on=["participant_id", "session_id"], how="outer")
-
-ri["task_type"] = pd.NA
-ri.loc[ri["nihtb_computed_score"].notna(), "task_type"] = "nihtb_flanker"
-ri.loc[
-    ri["nihtb_computed_score"].isna() & ri["ms_incongr_acc"].notna(),
-    "task_type"
-] = "millisecond_flanker"
-
-# 2d. Raw output columns
-ri["RespInhib_computed_notz"] = np.where(
-    ri["task_type"] == "nihtb_flanker", ri["nihtb_computed_score"], np.nan)
-ri["RespInhib_incongr_acc_notz"] = np.where(
-    ri["task_type"] == "millisecond_flanker", ri["ms_incongr_acc"], np.nan)
-
-nihtb_mask = ri["task_type"] == "nihtb_flanker"
-ms_mask    = ri["task_type"] == "millisecond_flanker"
-
-# ── Z-scoring ─────────────────────────────────────────────────────────────────
-# NIH Toolbox Flanker: higher computed_score = better → no flip
-# Millisecond Flanker: higher incongruent accuracy = better → no flip
-# Z-scoring is computed separately within each task type before combining,
-# so the two tasks' different scales do not contaminate each other.
-
-for suffix, groups in [
-    ("_withincohort",     [_cohort_key(ri.index)]),
-    ("_withincohortwave", [ri["session_id"]]),
-]:
-    ri.loc[nihtb_mask, f"_nihtb_z{suffix}"] = zscore_within_groups(
-        ri.loc[nihtb_mask, "nihtb_computed_score"],
-        [g.loc[nihtb_mask] for g in groups],
-    )
-    ri.loc[ms_mask, f"_ms_z{suffix}"] = zscore_within_groups(
-        ri.loc[ms_mask, "ms_incongr_acc"],
-        [g.loc[ms_mask] for g in groups],
-    )
-    col = f"RespInhib_z{suffix}"
-    ri[col] = np.nan
-    ri.loc[nihtb_mask, col] = ri.loc[nihtb_mask, f"_nihtb_z{suffix}"]
-    ri.loc[ms_mask,    col] = ri.loc[ms_mask,    f"_ms_z{suffix}"]
+ri["RespInhib_z_withincohort"] = zscore_within_groups(
+    ri["RespInhib_computed_notz"], [_cohort_key(ri.index)])
+ri["RespInhib_z_withincohortwave"] = zscore_within_groups(
+    ri["RespInhib_computed_notz"], [ri["session_id"]])
 
 ri_out = ri[["participant_id", "session_id",
-             "RespInhib_computed_notz", "RespInhib_incongr_acc_notz",
-             "RespInhib_z_withincohort",     "RespInhib_z_withincohortwave",
-             "task_type"]]
+             "RespInhib_computed_notz",
+             "RespInhib_z_withincohort", "RespInhib_z_withincohortwave"]]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -446,7 +411,46 @@ combined = master.copy()
 for df in [iq_out, ri_out, cf_out, wm_out, att_out]:
     combined = combined.merge(df, on=["participant_id", "session_id"], how="left")
 
-combined["task_type"] = combined["task_type"].fillna("n/a")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SMALL-WAVE BLANKING  (_withincohortwave only)
+# ══════════════════════════════════════════════════════════════════════════════
+# A `_withincohortwave` z-score is computed against only the people assessed at
+# that wave. Where a wave holds a handful of observations the group mean and SD
+# are themselves noise, so the resulting z-score is meaningless — but it is a
+# finite, plausible-looking number that nothing downstream can distinguish from a
+# well-estimated one. ABCD has three such cells: Cognitive Flexibility has 6
+# observations at ses-02A and 37 at ses-04A (against 11,708 at baseline), and
+# Working Memory has 15 at ses-02A.
+#
+# Rule: for each domain, blank `_withincohortwave` at any wave holding fewer than
+# MIN_WAVE_FRAC of that domain's LARGEST wave cell. The largest cell is used as
+# the reference rather than "baseline" because some domains in other cohorts have
+# no baseline data at all (IMAGEN's Cognitive Flexibility is FU3-only).
+#
+# Only the wave variant is blanked. `_withincohort` pools every wave, so a small
+# wave contributes harmlessly to a large group and its z-score stays valid. The
+# raw `_notz` value is also kept — the observation is real, it just cannot be
+# standardised against its own wave.
+MIN_WAVE_FRAC = 0.10
+
+print(f"Blanking _withincohortwave where a wave holds < {MIN_WAVE_FRAC:.0%} "
+      f"of the domain's largest wave …")
+for _dom, _spec in DOMAIN_SPEC.items():
+    _raw = _spec["raw"]
+    _zw  = f"{_spec['z_prefix']}_z_withincohortwave"
+    if _raw not in combined.columns or _zw not in combined.columns:
+        continue
+    _n = combined.groupby("session_id")[_raw].apply(lambda s: s.notna().sum())
+    if _n.max() == 0:
+        continue
+    _thresh = MIN_WAVE_FRAC * _n.max()
+    _small = [w for w, c in _n.items() if 0 < c < _thresh]
+    if _small:
+        _detail = ", ".join(f"{w}: {int(_n[w])}" for w in _small)
+        print(f"  {_dom}: blanked {_zw} at {len(_small)} wave(s) "
+              f"(largest wave n={int(_n.max())}, threshold {_thresh:.0f}) — {_detail}")
+        combined.loc[combined["session_id"].isin(_small), _zw] = np.nan
 
 col_order = [
     "participant_id", "session_id",
@@ -455,9 +459,8 @@ col_order = [
     "IQ_raw_z_withincohort",       "IQ_scaled_z_withincohort",
     "IQ_raw_z_withincohortwave",   "IQ_scaled_z_withincohortwave",
     # Response Inhibition
-    "RespInhib_computed_notz", "RespInhib_incongr_acc_notz",
+    "RespInhib_computed_notz",
     "RespInhib_z_withincohort",     "RespInhib_z_withincohortwave",
-    "task_type",
     # Cognitive Flexibility
     "CogFlex_computed_notz",
     "CogFlex_z_withincohort",       "CogFlex_z_withincohortwave",
@@ -583,11 +586,7 @@ if not args.skip_qc:
     # RespInhib: z column covers BOTH sub-tasks; raw_n is the union.
     print("\n[4] Z-score coverage matches raw coverage")
     for dom, spec in Z_SPEC.items():
-        if dom == "RespInhib_computed":
-            raw_n = qc_df[["RespInhib_computed_notz",
-                            "RespInhib_incongr_acc_notz"]].notna().any(axis=1).sum()
-        else:
-            raw_n = qc_df[spec["raw"]].notna().sum()
+        raw_n = qc_df[spec["raw"]].notna().sum()
         for suffix in ALL_Z_SUFFIXES:
             zcol = _zcol(dom, suffix)
             z_n = qc_df[zcol].notna().sum()
@@ -623,7 +622,6 @@ if not args.skip_qc:
     # ── QC 6: direction / sign-flip verification ──────────────────────────────
     # THE important check. Spearman ρ(raw, z) must be +1 (no flip) or -1 (flipped).
     # All ABCD domains are higher = better (no flip), so expect +1 everywhere.
-    # For RespInhib the z combines two tasks; check within each task_type subset.
     print("\n[6] Direction check: Spearman rho(raw, z) — no ABCD domains are flipped, expect +1")
     for dom, spec in Z_SPEC.items():
         expected = -1.0 if spec["flipped"] else +1.0
@@ -1044,7 +1042,7 @@ if not args.skip_qc:
     ax = axesC[2]
     palette_qc = {
         "IQ_scaled": "#4e79a7", "IQ_raw": "#9ecae1",
-        "RespInhib_computed": "#f28e2b", "RespInhib_incongr_acc": "#fdae6b",
+        "RespInhib_computed": "#f28e2b",
         "CogFlex": "#59a14f", "WorkingMem": "#e15759", "Attention": "#76b7b2",
     }
     tr_labels, tr_vals, tr_colors = [], [], []
